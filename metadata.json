@@ -1,0 +1,6 @@
+{
+  "name": "드림 퀘스트 : AI 직업 전문가 면담 어드벤처",
+  "description": "초등학생과 청소년을 위한 생생한 RPG 진로 탐험 시뮬레이션. 10년 차 직업 전문가와 대화하며 호감도를 쌓고 히든 미션을 달성해보세요.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
