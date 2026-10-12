@@ -38,7 +38,7 @@ class SoundController {
     return this.enabled;
   }
 
-  public play(type: 'click' | 'send' | 'receive' | 'heartUp' | 'heartDown' | 'questSuccess' | 'finish' | 'badge') {
+  public play(type: 'click' | 'send' | 'receive' | 'heartUp' | 'heartDown' | 'questSuccess' | 'finish' | 'badge' | 'micOn' | 'micOff') {
     if (!this.enabled) return;
     try {
       this.init();
@@ -47,6 +47,41 @@ class SoundController {
       const now = this.ctx.currentTime;
 
       switch (type) {
+        case 'micOn': {
+          [523.25, 783.99].forEach((freq, idx) => {
+            if (!this.ctx) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            const t = now + idx * 0.07;
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, t);
+            gain.gain.setValueAtTime(0.12, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(t);
+            osc.stop(t + 0.1);
+          });
+          break;
+        }
+
+        case 'micOff': {
+          [659.25, 440].forEach((freq, idx) => {
+            if (!this.ctx) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            const t = now + idx * 0.07;
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, t);
+            gain.gain.setValueAtTime(0.1, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(t);
+            osc.stop(t + 0.1);
+          });
+          break;
+        }
         case 'click': {
           const osc = this.ctx.createOscillator();
           const gain = this.ctx.createGain();

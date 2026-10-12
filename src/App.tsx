@@ -23,6 +23,10 @@ import {
   ShieldCheck,
   User,
   Zap,
+  Mic,
+  MicOff,
+  Square,
+  Volume1,
 } from 'lucide-react';
 import {
   CAREER_PROFILES,
@@ -35,7 +39,9 @@ import {
 import { MentorAvatar } from './components/MentorAvatar';
 import { Confetti } from './components/Confetti';
 import { ReportModal, FinalReportData } from './components/ReportModal';
+import { AudioWaveform } from './components/AudioWaveform';
 import { sound } from './utils/sound';
+import { speechRecognition, speechSynthesis, SpeechRecognitionService, SpeechSynthesisService } from './utils/speech';
 
 interface ChatMessage {
   id: string;
@@ -91,10 +97,29 @@ export default function App() {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [finalReport, setFinalReport] = useState<FinalReportData | null>(null);
 
+  // Voice & Speech (STT / TTS)
+  const [isListening, setIsListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [sttStatusNotice, setSttStatusNotice] = useState<string | null>(null);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [autoReadAnswers, setAutoReadAnswers] = useState<boolean>(true);
+  const [sttSupported, setSttSupported] = useState(false);
+  const [ttsSupported, setTtsSupported] = useState(false);
+
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<any>(null);
+
+  // Check speech API support & cleanup
+  useEffect(() => {
+    setSttSupported(SpeechRecognitionService.isSupported());
+    setTtsSupported(SpeechSynthesisService.isSupported());
+    return () => {
+      speechSynthesis.stop();
+      speechRecognition.abort();
+    };
+  }, []);
 
   // Cancel in-flight question and immediately unlock input
   const cancelCurrentRequest = () => {
@@ -142,6 +167,85 @@ export default function App() {
   const handleToggleSound = () => {
     const updated = sound.toggle();
     setIsSoundOn(updated);
+    if (!updated) {
+      speechSynthesis.stop();
+      setSpeakingMessageId(null);
+    }
+  };
+
+  const handleToggleVoiceInput = () => {
+    if (!SpeechRecognitionService.isSupported()) {
+      alert('현재 브라우저에서는 음성 인식을 지원하지 않습니다. Chrome 브라우저를 권장합니다.');
+      return;
+    }
+
+    if (isListening) {
+      handleFinishVoiceInput();
+      return;
+    }
+
+    sound.play('click');
+    setInterimTranscript('');
+    setSttStatusNotice(null);
+
+    const started = speechRecognition.start({
+      onResult: (text, isFinal) => {
+        setInterimTranscript(text);
+        if (isFinal) {
+          setInputValue((prev) => (prev ? `${prev} ${text}` : text));
+          setIsListening(false);
+          setInterimTranscript('');
+          setSttStatusNotice('🎙️ 음성이 입력되었습니다! 내용을 확인하신 후 [보내기] 버튼을 눌러주세요.');
+          setTimeout(() => {
+            inputRef.current?.focus();
+          }, 100);
+        }
+      },
+      onEnd: () => {
+        setIsListening(false);
+      },
+      onError: (err) => {
+        setIsListening(false);
+        setSttStatusNotice(`⚠️ ${err}`);
+      },
+    });
+
+    if (started) {
+      setIsListening(true);
+    }
+  };
+
+  const handleFinishVoiceInput = () => {
+    speechRecognition.stop();
+    setIsListening(false);
+    if (interimTranscript) {
+      setInputValue((prev) => (prev ? `${prev} ${interimTranscript}` : interimTranscript));
+      setInterimTranscript('');
+      setSttStatusNotice('🎙️ 음성이 입력되었습니다! 내용을 확인하신 후 [보내기] 버튼을 눌러주세요.');
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  };
+
+  const handleCancelVoiceInput = () => {
+    speechRecognition.abort();
+    setIsListening(false);
+    setInterimTranscript('');
+  };
+
+  const handleToggleTTS = (msgId: string, text: string) => {
+    if (speakingMessageId === msgId) {
+      speechSynthesis.stop();
+      setSpeakingMessageId(null);
+    } else {
+      sound.play('click');
+      setSpeakingMessageId(msgId);
+      speechSynthesis.speak(text, msgId, {
+        onEnd: () => setSpeakingMessageId(null),
+        onError: () => setSpeakingMessageId(null),
+      });
+    }
   };
 
   const handleSaveStudentName = (name: string) => {
@@ -187,6 +291,14 @@ export default function App() {
     setGameState('interview');
     sound.play('receive');
 
+    if (isSoundOn && autoReadAnswers) {
+      setSpeakingMessageId(welcomeMsg.id);
+      speechSynthesis.speak(welcomeMsg.content, welcomeMsg.id, {
+        onEnd: () => setSpeakingMessageId((prev) => (prev === welcomeMsg.id ? null : prev)),
+        onError: () => setSpeakingMessageId((prev) => (prev === welcomeMsg.id ? null : prev)),
+      });
+    }
+
     setTimeout(() => {
       inputRef.current?.focus();
     }, 200);
@@ -201,6 +313,16 @@ export default function App() {
     setInputValue('');
     setLastQuestion(text);
     setShowHelperQuestions(false);
+    setSttStatusNotice(null);
+
+    // Stop active voice input or ongoing speech synthesis
+    if (isListening) {
+      speechRecognition.abort();
+      setIsListening(false);
+      setInterimTranscript('');
+    }
+    speechSynthesis.stop();
+    setSpeakingMessageId(null);
 
     // Cancel any previous pending request
     if (abortControllerRef.current) {
@@ -322,6 +444,15 @@ export default function App() {
         setMessages((prev) => [...prev, replyMsg]);
         sound.play('receive');
       }
+
+      // Auto Read Answer (TTS) if enabled and sound is on
+      if (isSoundOn && autoReadAnswers && data.dialogue) {
+        setSpeakingMessageId(replyMsg.id);
+        speechSynthesis.speak(data.dialogue, replyMsg.id, {
+          onEnd: () => setSpeakingMessageId((prev) => (prev === replyMsg.id ? null : prev)),
+          onError: () => setSpeakingMessageId((prev) => (prev === replyMsg.id ? null : prev)),
+        });
+      }
     } catch (err: any) {
       const isTimeout =
         err.name === 'AbortError' ||
@@ -359,6 +490,11 @@ export default function App() {
   // Finish interview
   const handleFinishInterview = async () => {
     sound.play('click');
+    speechSynthesis.stop();
+    speechRecognition.abort();
+    setIsListening(false);
+    setSpeakingMessageId(null);
+
     const userConfirm = window.confirm(
       '면담을 마치고 나의 직업 탐구 종합 성적표와 인증서를 확인하시겠습니까?'
     );
@@ -443,6 +579,28 @@ export default function App() {
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
               <span>{serverKeyAvailable || teacherApiKey ? '학교/선생님 키 연결 완료' : '키 설정 가능'}</span>
             </div>
+
+            {/* Voice Answer Reading (TTS) Toggle */}
+            <button
+              onClick={() => {
+                sound.play('click');
+                const next = !autoReadAnswers;
+                setAutoReadAnswers(next);
+                if (!next) {
+                  speechSynthesis.stop();
+                  setSpeakingMessageId(null);
+                }
+              }}
+              className={`px-2.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                autoReadAnswers && isSoundOn
+                  ? 'bg-purple-900/40 text-purple-200 border-purple-500/40'
+                  : 'bg-slate-800/80 text-slate-400 border-slate-700'
+              }`}
+              title="멘토의 답변을 음성으로 읽어주기 (TTS) 켜기/끄기"
+            >
+              <Volume1 className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden sm:inline">음성 답변 {autoReadAnswers && isSoundOn ? 'ON' : 'OFF'}</span>
+            </button>
 
             {/* Sound Toggle */}
             <button
@@ -730,13 +888,39 @@ export default function App() {
                     </div>
 
                     <div className="flex flex-col">
-                      <span
-                        className={`text-[11px] font-bold text-slate-400 mb-1 px-1 ${
-                          isUser ? 'text-right' : 'text-left'
-                        }`}
-                      >
-                        {msg.speakerName}
-                      </span>
+                      <div className="flex items-center justify-between mb-1 px-1 gap-2">
+                        <span
+                          className={`text-[11px] font-bold text-slate-400 ${
+                            isUser ? 'text-right' : 'text-left'
+                          }`}
+                        >
+                          {msg.speakerName}
+                        </span>
+                        {!isUser && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleTTS(msg.id, msg.content)}
+                            className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border transition-all ${
+                              speakingMessageId === msg.id
+                                ? 'bg-rose-500/25 text-rose-300 border-rose-400/50 animate-pulse font-bold'
+                                : 'bg-slate-800 text-slate-400 hover:text-indigo-200 border-slate-700/80 hover:border-indigo-400/50'
+                            }`}
+                            title={speakingMessageId === msg.id ? '음성 읽기 멈추기' : '음성으로 다시 듣기'}
+                          >
+                            {speakingMessageId === msg.id ? (
+                              <>
+                                <Square className="w-2.5 h-2.5 fill-rose-400 text-rose-400" />
+                                <span>읽기 중지</span>
+                              </>
+                            ) : (
+                              <>
+                                <Volume2 className="w-3 h-3 text-indigo-400" />
+                                <span>다시 듣기</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
                       <div
                         className={`p-3.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words shadow-md ${
                           isUser
@@ -812,6 +996,31 @@ export default function App() {
 
             {/* Bottom Input & Action Bar */}
             <div className="space-y-2">
+              {/* Voice Recognition Audio Waveform & Interim Preview */}
+              <AudioWaveform
+                isListening={isListening}
+                interimText={interimTranscript}
+                onFinish={handleFinishVoiceInput}
+                onCancel={handleCancelVoiceInput}
+              />
+
+              {/* STT Status & Feedback Notice */}
+              {sttStatusNotice && (
+                <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-indigo-950/80 border border-indigo-500/50 text-xs text-indigo-200 animate-in fade-in duration-150">
+                  <div className="flex items-center gap-1.5 truncate">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300 flex-shrink-0" />
+                    <span className="truncate">{sttStatusNotice}</span>
+                  </div>
+                  <button
+                    onClick={() => setSttStatusNotice(null)}
+                    className="text-slate-400 hover:text-white text-xs px-1.5 py-0.5 rounded ml-2 flex-shrink-0"
+                    title="닫기"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               {/* Quick Retry Chip for Last Question if pending/failed */}
               {lastQuestion && !isLoading && (
                 <div className="flex items-center justify-between px-2 py-1 rounded-xl bg-slate-900/60 border border-slate-700/60 text-xs">
@@ -843,6 +1052,32 @@ export default function App() {
                   <span className="hidden sm:inline">추천 질문</span>
                 </button>
 
+                {/* Voice Input Microphone Button */}
+                <button
+                  type="button"
+                  onClick={handleToggleVoiceInput}
+                  disabled={isLoading}
+                  className={`px-3 sm:px-3.5 py-2.5 rounded-2xl border text-xs font-bold flex items-center gap-1.5 transition-all flex-shrink-0 ${
+                    isListening
+                      ? 'bg-rose-600 text-white border-rose-400 shadow-lg shadow-rose-600/50 animate-pulse'
+                      : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-rose-300 hover:text-rose-200'
+                  }`}
+                  title={isListening ? '음성 녹음 중지 및 입력창 반영' : '마이크로 음성 질문하기'}
+                >
+                  {isListening ? (
+                    <>
+                      <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+                      <Mic className="w-4 h-4 text-white" />
+                      <span className="hidden md:inline">듣는 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="w-4 h-4 text-rose-400" />
+                      <span className="hidden sm:inline">음성 질문</span>
+                    </>
+                  )}
+                </button>
+
                 <div className="relative flex-1">
                   <input
                     ref={inputRef}
@@ -854,7 +1089,11 @@ export default function App() {
                         handleSendMessage();
                       }
                     }}
-                    placeholder="전문가님께 예의 바르고 궁금한 점을 질문해 보세요..."
+                    placeholder={
+                      isListening
+                        ? '음성을 인식하고 있습니다. 말씀해 주세요...'
+                        : '전문가님께 질문을 적거나 마이크로 말씀해 보세요...'
+                    }
                     disabled={isLoading}
                     className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-slate-700 focus:border-indigo-400 text-sm text-white placeholder-slate-500 focus:outline-none transition-colors"
                   />
@@ -887,6 +1126,10 @@ export default function App() {
                   onClick={() => {
                     sound.play('click');
                     if (window.confirm('다른 직업 선택 화면으로 돌아가시겠습니까?')) {
+                      speechSynthesis.stop();
+                      speechRecognition.abort();
+                      setIsListening(false);
+                      setSpeakingMessageId(null);
                       setGameState('select');
                     }
                   }}
